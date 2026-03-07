@@ -250,14 +250,14 @@ function parseAssurance(text, username) {
     teknisi: (username || '').replace('@', ''),
   };
 
-  // Parse INCIDENT (dari pattern /INPUT: INC47052822)
-  const incidentMatch = text.match(/\/INPUT\s*:\s*([A-Z0-9]+)/i);
-  if (incidentMatch && incidentMatch[1]) {
-    data.incidentNo = incidentMatch[1].trim();
+  // Parse INCIDENT (pattern: INC47052822)
+  const incidentMatch = text.match(/INC[0-9]+/i);
+  if (incidentMatch) {
+    data.incidentNo = incidentMatch[0].trim().toUpperCase();
   }
 
   // Parse CLOSE (dari pattern CLOSE: deskripsi)
-  const closeMatch = text.match(/CLOSE\s*:\s*(.+?)(?=\n|$)/i);
+  const closeMatch = text.match(/CLOSE\s*:\s*(.+?)(?=\n|MATERIAL|$)/i);
   if (closeMatch && closeMatch[1]) {
     data.closeDesc = closeMatch[1].trim();
   }
