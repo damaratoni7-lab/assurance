@@ -55,6 +55,30 @@ const BULAN_ID = {
   'september': 9, 'oktober': 10, 'november': 11, 'desember': 12,
 };
 
+// === HELPER: Auto-detect ORDER ASSURANCE column indices from header ===
+function getOrderColumns(data) {
+  const defaults = { incident: 1, teknisi: 2, ttrCustomer: 3, workzone: 4, customerType: 5, status: 9 };
+  if (!data || data.length < 1) return defaults;
+
+  const header = data[0] || [];
+  const cols = { ...defaults };
+
+  for (let c = 0; c < header.length; c++) {
+    const h = (header[c] || '').toUpperCase().trim();
+    if (h === 'INCIDENT' || h === 'NO INCIDENT') cols.incident = c;
+    else if (h === 'TEKNISI') cols.teknisi = c;
+    else if (h.includes('TTR') && h.includes('CUSTOMER')) cols.ttrCustomer = c;
+    else if (h === 'WORKZONE' && c < 10) cols.workzone = c; // main workzone only
+    else if (h === 'CUSTOMER TYPE' || h === 'CUSTOMER_TYPE') {
+      if (c < 10) cols.customerType = c; // first occurrence = main data
+    }
+    else if (h === 'STATUS') cols.status = c;
+  }
+
+  console.log(`📍 ORDER columns: INC=${cols.incident}, TEKNISI=${cols.teknisi}, TTR=${cols.ttrCustomer}, WZ=${cols.workzone}, CUST_TYPE=${cols.customerType}, STATUS=${cols.status}`);
+  return cols;
+}
+
 // === CACHING ===
 const cache = {
   masterData: null, masterDataTime: 0,
@@ -369,13 +393,14 @@ async function autoFillTeknisi() {
     const data = await getSheetData(ORDER_ASSURANCE_SHEET, false);
     if (!data || data.length < 2) return;
 
+    const cols = getOrderColumns(data);
     const mappings = getWorkzoneMappings(data);
     let filled = 0;
 
     for (let i = 1; i < data.length; i++) {
-      const teknisi = (data[i][2] || '').trim();
-      const status = (data[i][9] || '').toUpperCase().trim();
-      const workzone = (data[i][4] || '').trim();
+      const teknisi = (data[i][cols.teknisi] || '').trim();
+      const status = (data[i][cols.status] || '').toUpperCase().trim();
+      const workzone = (data[i][cols.workzone] || '').trim();
 
       if (teknisi || !status || status === 'CLOSE') continue;
 
@@ -404,16 +429,17 @@ async function checkTTRAlerts() {
     const data = await getSheetData(ORDER_ASSURANCE_SHEET, false);
     if (!data || data.length < 2) return;
 
+    const cols = getOrderColumns(data);
     const mappings = getWorkzoneMappings(data);
     const admins = await getActiveAdmins();
     const adminTags = admins.map(a => `@${a}`).join(' ');
 
     for (let i = 1; i < data.length; i++) {
-      const incident = (data[i][1] || '').trim();
-      const ttrStr = (data[i][3] || '').trim();
-      const workzone = (data[i][4] || '').trim();
-      const custType = (data[i][5] || '').trim().toUpperCase();
-      const status = (data[i][9] || '').toUpperCase().trim();
+      const incident = (data[i][cols.incident] || '').trim();
+      const ttrStr = (data[i][cols.ttrCustomer] || '').trim();
+      const workzone = (data[i][cols.workzone] || '').trim();
+      const custType = (data[i][cols.customerType] || '').trim().toUpperCase();
+      const status = (data[i][cols.status] || '').toUpperCase().trim();
 
       if (status !== 'OPEN' || !incident || !ttrStr) continue;
 
@@ -427,7 +453,7 @@ async function checkTTRAlerts() {
       }
       if (maxTTR === null) continue;
 
-      const team = findMappingTeam(workzone, status, mappings) || (data[i][2] || '-').trim();
+      const team = findMappingTeam(workzone, status, mappings) || (data[i][cols.teknisi] || '-').trim();
       // Clean team from double @
       const cleanTeam = team.replace(/@@/g, '@');
 
@@ -469,8 +495,8 @@ async function checkTTRAlerts() {
     // Cleanup: remove closed incidents from alert state
     const openIncidents = new Set();
     for (let i = 1; i < data.length; i++) {
-      const status = (data[i][9] || '').toUpperCase().trim();
-      if (status === 'OPEN') openIncidents.add((data[i][1] || '').trim());
+      const st = (data[i][cols.status] || '').toUpperCase().trim();
+      if (st === 'OPEN') openIncidents.add((data[i][cols.incident] || '').trim());
     }
     for (const inc of alertState.warned) { if (!openIncidents.has(inc)) alertState.warned.delete(inc); }
     for (const inc of alertState.expired) { if (!openIncidents.has(inc)) alertState.expired.delete(inc); }
@@ -526,15 +552,18 @@ bot.on('message', async (msg) => {
         let orderClosed = false;
         try {
           const orderData = await getSheetData(ORDER_ASSURANCE_SHEET, false);
+          const orderCols = getOrderColumns(orderData);
+          // Convert column index to letter (e.g., 9 -> J, 8 -> I)
+          const statusColLetter = String.fromCharCode(65 + orderCols.status);
           for (let i = 1; i < orderData.length; i++) {
-            const incInOrder = (orderData[i][1] || '').trim().toUpperCase();
+            const incInOrder = (orderData[i][orderCols.incident] || '').trim().toUpperCase();
             if (incInOrder === parsed.incidentNo) {
-              await updateSheetCell(ORDER_ASSURANCE_SHEET, `J${i + 1}`, 'CLOSE');
+              await updateSheetCell(ORDER_ASSURANCE_SHEET, `${statusColLetter}${i + 1}`, 'CLOSE');
               cache.orderAssuranceData = null;
               alertState.warned.delete(parsed.incidentNo);
               alertState.expired.delete(parsed.incidentNo);
               orderClosed = true;
-              console.log(`✅ Auto-close ORDER: ${parsed.incidentNo} row ${i + 1}`);
+              console.log(`✅ Auto-close ORDER: ${parsed.incidentNo} row ${i + 1} col ${statusColLetter}`);
               break;
             }
           }
@@ -575,6 +604,7 @@ bot.on('message', async (msg) => {
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
         const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET), 10000);
+        const cols = getOrderColumns(data);
         const mappings = getWorkzoneMappings(data);
 
         const now = new Date();
@@ -591,10 +621,10 @@ bot.on('message', async (msg) => {
         let totalGamas = 0;
 
         for (let i = 1; i < data.length; i++) {
-          const incident = (data[i][1] || '-').trim();
-          const ttrCustomer = (data[i][3] || '-').trim();
-          const workzone = (data[i][4] || '').trim();
-          const status = (data[i][9] || '').toUpperCase().trim();
+          const incident = (data[i][cols.incident] || '-').trim();
+          const ttrCustomer = (data[i][cols.ttrCustomer] || '-').trim();
+          const workzone = (data[i][cols.workzone] || '').trim();
+          const status = (data[i][cols.status] || '').toUpperCase().trim();
 
           if (status === 'OPEN') {
             const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
@@ -661,17 +691,18 @@ bot.on('message', async (msg) => {
         const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET, false), 10000);
         if (!data || data.length < 2) return sendTelegram(chatId, '<i>Tidak ada data</i>', { reply_to_message_id: msgId });
 
+        const cols = getOrderColumns(data);
         const mappings = getWorkzoneMappings(data);
         let expiredList = [];
         let warningList = [];
         let safeList = [];
 
         for (let i = 1; i < data.length; i++) {
-          const incident = (data[i][1] || '').trim();
-          const ttrStr = (data[i][3] || '').trim();
-          const workzone = (data[i][4] || '').trim();
-          const custType = (data[i][5] || '').trim().toUpperCase();
-          const status = (data[i][9] || '').toUpperCase().trim();
+          const incident = (data[i][cols.incident] || '').trim();
+          const ttrStr = (data[i][cols.ttrCustomer] || '').trim();
+          const workzone = (data[i][cols.workzone] || '').trim();
+          const custType = (data[i][cols.customerType] || '').trim().toUpperCase();
+          const status = (data[i][cols.status] || '').toUpperCase().trim();
 
           if (status !== 'OPEN' || !incident || !ttrStr) continue;
 
@@ -684,7 +715,7 @@ bot.on('message', async (msg) => {
           }
           if (maxTTR === null) continue;
 
-          const team = findMappingTeam(workzone, status, mappings) || (data[i][2] || '-').trim();
+          const team = findMappingTeam(workzone, status, mappings) || (data[i][cols.teknisi] || '-').trim();
           const cleanTeam = team.replace(/@@/g, '@');
 
           const entry = { incident, ttrStr, custType, maxTTR, elapsed, team: cleanTeam };
