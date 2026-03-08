@@ -203,14 +203,37 @@ async function getActiveAdmins() {
   }
 }
 
-// === HELPER: Get workzone mappings from ORDER ASSURANCE cols Q & R ===
+// === HELPER: Get workzone mappings from ORDER ASSURANCE (auto-detect columns) ===
 function getWorkzoneMappings(data) {
+  if (!data || data.length < 2) return [];
+
+  // Auto-detect MAPPING TEAM and WORKZONE columns from header
+  const header = data[0] || [];
+  let teamColIdx = -1;
+  let wzColIdx = -1;
+
+  for (let c = 0; c < header.length; c++) {
+    const h = (header[c] || '').toUpperCase().trim();
+    if (h.includes('MAPPING') && h.includes('TEAM')) teamColIdx = c;
+    // Only match WORKZONE columns after column 10 (to skip main WORKZONE at col E)
+    if (c > 10 && h.includes('WORKZONE')) wzColIdx = c;
+  }
+
+  // Fallback to Q(16) and R(17) if not found
+  if (teamColIdx === -1) teamColIdx = 16;
+  if (wzColIdx === -1) wzColIdx = teamColIdx + 1;
+
+  console.log(`📍 Mapping columns detected: MAPPING TEAM=col ${teamColIdx}, WORKZONE=col ${wzColIdx}`);
+
   const mappings = [];
   for (let i = 1; i < data.length; i++) {
-    const team = (data[i][16] || '').trim();
-    const wz = (data[i][17] || '').trim();
+    const team = (data[i][teamColIdx] || '').trim();
+    const wz = (data[i][wzColIdx] || '').trim();
     if (team && wz) mappings.push({ team, workzone: wz });
   }
+
+  console.log(`📍 Found ${mappings.length} workzone mappings`);
+
   // Remove duplicates
   const seen = new Set();
   return mappings.filter(m => {
@@ -520,6 +543,21 @@ bot.on('message', async (msg) => {
         }
 
         let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
+        confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
+        confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
+        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE\n`;
+        confirmMsg += `<b>Material:</b>\n`;
+        confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
+        confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
+        confirmMsg += `  • SOC: ${parsed.soc || '-'}\n`;
+        confirmMsg += `  • PSLAVE: ${parsed.pslave || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/8: ${parsed.passive1_8 || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/4: ${parsed.passive1_4 || '-'}\n`;
+        confirmMsg += `  • Pigtail: ${parsed.pigtail || '-'}\n`;
+        confirmMsg += `  • Adaptor: ${parsed.adaptor || '-'}\n`;
+        confirmMsg += `  • Roset: ${parsed.roset || '-'}\n`;
+        confirmMsg += `  • RJ 45: ${parsed.rj45 || '-'}\n`;
+        confirmMsg += `  • LAN: ${parsed.lan || '-'}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
@@ -608,6 +646,98 @@ bot.on('message', async (msg) => {
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
       } catch (err) {
         console.error('❌ /sisa_ticket Error:', err.message);
+        return sendTelegram(chatId, `❌ Error: ${err.message}`, { reply_to_message_id: msgId });
+      }
+    }
+
+    // ============================================================
+    // /cek_ttr - Cek TTR warning & expired secara manual
+    // ============================================================
+    else if (/^\/cek_ttr\b/i.test(text)) {
+      try {
+        const authResult = await checkAuthorization(username, ['ADMIN']);
+        if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
+
+        const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET, false), 10000);
+        if (!data || data.length < 2) return sendTelegram(chatId, '<i>Tidak ada data</i>', { reply_to_message_id: msgId });
+
+        const mappings = getWorkzoneMappings(data);
+        let expiredList = [];
+        let warningList = [];
+        let safeList = [];
+
+        for (let i = 1; i < data.length; i++) {
+          const incident = (data[i][1] || '').trim();
+          const ttrStr = (data[i][3] || '').trim();
+          const workzone = (data[i][4] || '').trim();
+          const custType = (data[i][5] || '').trim().toUpperCase();
+          const status = (data[i][9] || '').toUpperCase().trim();
+
+          if (status !== 'OPEN' || !incident || !ttrStr) continue;
+
+          const elapsed = parseTTRHours(ttrStr);
+          if (elapsed === null) continue;
+
+          let maxTTR = null;
+          for (const [type, hours] of Object.entries(TTR_TABLE)) {
+            if (type.toUpperCase() === custType) { maxTTR = hours; break; }
+          }
+          if (maxTTR === null) continue;
+
+          const team = findMappingTeam(workzone, status, mappings) || (data[i][2] || '-').trim();
+          const cleanTeam = team.replace(/@@/g, '@');
+
+          const entry = { incident, ttrStr, custType, maxTTR, elapsed, team: cleanTeam };
+
+          if (elapsed >= maxTTR) {
+            entry.overtime = elapsed - maxTTR;
+            expiredList.push(entry);
+          } else if (elapsed >= maxTTR - 1) {
+            entry.sisa = maxTTR - elapsed;
+            warningList.push(entry);
+          } else {
+            safeList.push(entry);
+          }
+        }
+
+        // Sort by overtime/sisa descending
+        expiredList.sort((a, b) => b.overtime - a.overtime);
+        warningList.sort((a, b) => a.sisa - b.sisa);
+
+        let response = `📋 <b>CEK TTR - STATUS SEMUA TICKET OPEN</b>\n\n`;
+
+        // EXPIRED
+        response += `🔴 <b>EXPIRED: ${expiredList.length} tickets</b>\n`;
+        if (expiredList.length === 0) {
+          response += '<i>Tidak ada ticket expired</i>\n\n';
+        } else {
+          expiredList.forEach((e, idx) => {
+            response += `${idx + 1}. <b>${e.incident}</b>\n`;
+            response += `   ${e.custType} (Max: ${e.maxTTR} Jam)\n`;
+            response += `   Elapsed: ${e.ttrStr} | Overtime: ${formatHours(e.overtime)}\n`;
+            response += `   Teknisi: ${e.team}\n\n`;
+          });
+        }
+
+        // WARNING
+        response += `⚠️ <b>WARNING (< 1 Jam): ${warningList.length} tickets</b>\n`;
+        if (warningList.length === 0) {
+          response += '<i>Tidak ada ticket mendekati expired</i>\n\n';
+        } else {
+          warningList.forEach((e, idx) => {
+            response += `${idx + 1}. <b>${e.incident}</b>\n`;
+            response += `   ${e.custType} (Max: ${e.maxTTR} Jam)\n`;
+            response += `   Elapsed: ${e.ttrStr} | Sisa: ${formatHours(e.sisa)}\n`;
+            response += `   Teknisi: ${e.team}\n\n`;
+          });
+        }
+
+        // SAFE
+        response += `✅ <b>AMAN: ${safeList.length} tickets</b>`;
+
+        return sendTelegram(chatId, response, { reply_to_message_id: msgId });
+      } catch (err) {
+        console.error('❌ /cek_ttr Error:', err.message);
         return sendTelegram(chatId, `❌ Error: ${err.message}`, { reply_to_message_id: msgId });
       }
     }
@@ -789,6 +919,7 @@ bot.on('message', async (msg) => {
 
 <b>📊 MONITORING (ADMIN):</b>
 /sisa_ticket - Ticket yang masih OPEN
+/cek_ttr - Cek TTR warning & expired
 /material_used - Total material yang dipakai
 /rekap_hari - Rekap close teknisi HARI INI
 /rekap_bulan - Rekap close teknisi BULAN INI
@@ -846,7 +977,7 @@ setTimeout(() => {
   autoFillTeknisi();
   checkTTRAlerts();
 
-  // Then every 5 minutes
+  // Then every 5 minutes 
   setInterval(() => {
     autoFillTeknisi();
     checkTTRAlerts();
