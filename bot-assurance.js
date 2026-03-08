@@ -520,6 +520,21 @@ bot.on('message', async (msg) => {
         }
 
         let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
+        confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
+        confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
+        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE\n`;
+        confirmMsg += `<b>Material:</b>\n`;
+        confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
+        confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
+        confirmMsg += `  • SOC: ${parsed.soc || '-'}\n`;
+        confirmMsg += `  • PSLAVE: ${parsed.pslave || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/8: ${parsed.passive1_8 || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/4: ${parsed.passive1_4 || '-'}\n`;
+        confirmMsg += `  • Pigtail: ${parsed.pigtail || '-'}\n`;
+        confirmMsg += `  • Adaptor: ${parsed.adaptor || '-'}\n`;
+        confirmMsg += `  • Roset: ${parsed.roset || '-'}\n`;
+        confirmMsg += `  • RJ 45: ${parsed.rj45 || '-'}\n`;
+        confirmMsg += `  • LAN: ${parsed.lan || '-'}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
@@ -548,20 +563,29 @@ bot.on('message', async (msg) => {
         let ticketsByTeam = {};
         let totalOpen = 0;
 
+        // Group GAMAS tickets separately
+        let gamasTickets = {};
+        let totalGamas = 0;
+
         for (let i = 1; i < data.length; i++) {
           const incident = (data[i][1] || '-').trim();
           const ttrCustomer = (data[i][3] || '-').trim();
           const workzone = (data[i][4] || '').trim();
           const status = (data[i][9] || '').toUpperCase().trim();
 
-          if (status !== 'OPEN') continue;
-
-          const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
-          const cleanTeam = team.replace(/@@/g, '@');
-
-          if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
-          ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer });
-          totalOpen++;
+          if (status === 'OPEN') {
+            const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
+            const cleanTeam = team.replace(/@@/g, '@');
+            if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
+            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer });
+            totalOpen++;
+          } else if (status === 'GAMAS') {
+            const team = findMappingTeam(workzone, 'GAMAS', mappings) || workzone || '-';
+            const cleanTeam = team.replace(/@@/g, '@');
+            if (!gamasTickets[cleanTeam]) gamasTickets[cleanTeam] = [];
+            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer });
+            totalGamas++;
+          }
         }
 
         const sortedTeams = Object.keys(ticketsByTeam).sort();
@@ -570,10 +594,24 @@ bot.on('message', async (msg) => {
         response += `<b>Total OPEN : ${totalOpen} tickets</b>\n\n`;
 
         if (sortedTeams.length === 0) {
-          response += '<i>Tidak ada ticket yang masih OPEN</i>';
+          response += '<i>Tidak ada ticket yang masih OPEN</i>\n';
         } else {
           sortedTeams.forEach((teamName, idx) => {
             const tickets = ticketsByTeam[teamName];
+            response += `${idx + 1}. <b>${teamName}</b>\n`;
+            tickets.forEach(t => {
+              response += `   ${t.incident}   ${t.ttr}\n`;
+            });
+            response += '\n';
+          });
+        }
+
+        // === GAMAS Section ===
+        if (totalGamas > 0) {
+          response += `<b>Total GAMAS : ${totalGamas} tickets</b>\n\n`;
+          const sortedGamas = Object.keys(gamasTickets).sort();
+          sortedGamas.forEach((teamName, idx) => {
+            const tickets = gamasTickets[teamName];
             response += `${idx + 1}. <b>${teamName}</b>\n`;
             tickets.forEach(t => {
               response += `   ${t.incident}   ${t.ttr}\n`;
@@ -628,66 +666,125 @@ bot.on('message', async (msg) => {
     }
 
     // ============================================================
-    // /rekap_close - Rekap total close per teknisi (hari/bulan/tahun)
+    // /rekap_hari - Rekap close per teknisi HARI INI
     // ============================================================
-    else if (/^\/rekap_close\b/i.test(text)) {
+    else if (/^\/rekap_hari\b/i.test(text)) {
       try {
         const authResult = await checkAuthorization(username, ['ADMIN']);
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
         const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
         const today = getTodayJakarta();
-
-        let hariIni = {}, bulanIni = {}, tahunIni = {};
+        let map = {};
 
         for (let i = 1; i < data.length; i++) {
           const tanggal = (data[i][0] || '').trim();
           const teknisi = (data[i][14] || '-').trim();
           const d = parseIndonesianDate(tanggal);
           if (!d) continue;
-
-          // Tahun ini
-          if (d.year === today.year) {
-            tahunIni[teknisi] = (tahunIni[teknisi] || 0) + 1;
-
-            // Bulan ini
-            if (d.month === today.month) {
-              bulanIni[teknisi] = (bulanIni[teknisi] || 0) + 1;
-
-              // Hari ini
-              if (d.day === today.day) {
-                hariIni[teknisi] = (hariIni[teknisi] || 0) + 1;
-              }
-            }
+          if (d.day === today.day && d.month === today.month && d.year === today.year) {
+            map[teknisi] = (map[teknisi] || 0) + 1;
           }
         }
 
         const now = new Date();
         const todayStr = now.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' });
-        const bulanStr = now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' });
-        const tahunStr = now.toLocaleDateString('id-ID', { year: 'numeric', timeZone: 'Asia/Jakarta' });
+        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
+        const total = entries.reduce((sum, [_, c]) => sum + c, 0);
 
-        function buildSection(title, map) {
-          const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
-          const total = entries.reduce((sum, [_, c]) => sum + c, 0);
-          let s = `📅 <b>${title}:</b>\n`;
-          if (entries.length === 0) {
-            s += '<i>Belum ada data</i>\n';
-          } else {
-            entries.forEach(([tek, c]) => { s += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
-            s += `<b>Total: ${total} tickets</b>\n`;
-          }
-          return s;
+        let response = `📊 <b>REKAP CLOSE - HARI INI</b>\n📅 ${todayStr}\n\n`;
+        if (entries.length === 0) {
+          response += '<i>Belum ada data hari ini</i>';
+        } else {
+          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
+          response += `\n<b>Total: ${total} tickets</b>`;
         }
-
-        let response = `📊 <b>REKAP CLOSE TEKNISI</b>\n\n`;
-        response += buildSection(`HARI INI (${todayStr})`, hariIni) + '\n';
-        response += buildSection(`BULAN INI (${bulanStr})`, bulanIni) + '\n';
-        response += buildSection(`TAHUN INI (${tahunStr})`, tahunIni);
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
       } catch (err) {
-        console.error('❌ /rekap_close Error:', err.message);
+        console.error('❌ /rekap_hari Error:', err.message);
+        return sendTelegram(chatId, `❌ Error: ${err.message}`, { reply_to_message_id: msgId });
+      }
+    }
+
+    // ============================================================
+    // /rekap_bulan - Rekap close per teknisi BULAN INI
+    // ============================================================
+    else if (/^\/rekap_bulan\b/i.test(text)) {
+      try {
+        const authResult = await checkAuthorization(username, ['ADMIN']);
+        if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
+
+        const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
+        const today = getTodayJakarta();
+        let map = {};
+
+        for (let i = 1; i < data.length; i++) {
+          const tanggal = (data[i][0] || '').trim();
+          const teknisi = (data[i][14] || '-').trim();
+          const d = parseIndonesianDate(tanggal);
+          if (!d) continue;
+          if (d.month === today.month && d.year === today.year) {
+            map[teknisi] = (map[teknisi] || 0) + 1;
+          }
+        }
+
+        const now = new Date();
+        const bulanStr = now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' });
+        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
+        const total = entries.reduce((sum, [_, c]) => sum + c, 0);
+
+        let response = `� <b>REKAP CLOSE - BULAN INI</b>\n📅 ${bulanStr}\n\n`;
+        if (entries.length === 0) {
+          response += '<i>Belum ada data bulan ini</i>';
+        } else {
+          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
+          response += `\n<b>Total: ${total} tickets</b>`;
+        }
+
+        return sendTelegram(chatId, response, { reply_to_message_id: msgId });
+      } catch (err) {
+        console.error('❌ /rekap_bulan Error:', err.message);
+        return sendTelegram(chatId, `❌ Error: ${err.message}`, { reply_to_message_id: msgId });
+      }
+    }
+
+    // ============================================================
+    // /rekap_tahun - Rekap close per teknisi TAHUN INI
+    // ============================================================
+    else if (/^\/rekap_tahun\b/i.test(text)) {
+      try {
+        const authResult = await checkAuthorization(username, ['ADMIN']);
+        if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
+
+        const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
+        const today = getTodayJakarta();
+        let map = {};
+
+        for (let i = 1; i < data.length; i++) {
+          const tanggal = (data[i][0] || '').trim();
+          const teknisi = (data[i][14] || '-').trim();
+          const d = parseIndonesianDate(tanggal);
+          if (!d) continue;
+          if (d.year === today.year) {
+            map[teknisi] = (map[teknisi] || 0) + 1;
+          }
+        }
+
+        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
+        const total = entries.reduce((sum, [_, c]) => sum + c, 0);
+
+        let response = `📊 <b>REKAP CLOSE - TAHUN INI</b>\n📅 ${today.year}\n\n`;
+        if (entries.length === 0) {
+          response += '<i>Belum ada data tahun ini</i>';
+        } else {
+          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
+          response += `\n<b>Total: ${total} tickets</b>`;
+        }
+
+        return sendTelegram(chatId, response, { reply_to_message_id: msgId });
+      } catch (err) {
+        console.error('❌ /rekap_tahun Error:', err.message);
         return sendTelegram(chatId, `❌ Error: ${err.message}`, { reply_to_message_id: msgId });
       }
     }
@@ -708,7 +805,9 @@ bot.on('message', async (msg) => {
 <b>📊 MONITORING (ADMIN):</b>
 /sisa_ticket - Ticket yang masih OPEN
 /material_used - Total material yang dipakai
-/rekap_close - Rekap close per teknisi (hari/bulan/tahun)
+/rekap_hari - Rekap close teknisi HARI INI
+/rekap_bulan - Rekap close teknisi BULAN INI
+/rekap_tahun - Rekap close teknisi TAHUN INI
 
 <b>📋 FORMAT /INPUT:</b>
 /INPUT INC47052822
