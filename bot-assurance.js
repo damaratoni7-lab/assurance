@@ -936,6 +936,13 @@ bot.on('message', async (msg) => {
     }
 
     // ============================================================
+    // /chatid - Get chat ID (untuk setup GROUP_CHAT_ID)
+    // ============================================================
+    else if (/^\/chatid\b/i.test(text)) {
+      return sendTelegram(chatId, `📍 <b>Chat ID:</b> <code>${chatId}</code>\n<b>Type:</b> ${msg.chat.type}`, { reply_to_message_id: msgId });
+    }
+
+    // ============================================================
     // /help or /start
     // ============================================================
     else if (/^\/(help|start)\b/i.test(text)) {
