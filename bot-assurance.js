@@ -625,19 +625,20 @@ bot.on('message', async (msg) => {
           const incident = (data[i][cols.incident] || '-').trim();
           const ttrCustomer = (data[i][cols.ttrCustomer] || '-').trim();
           const workzone = (data[i][cols.workzone] || '').trim();
+          const custType = (data[i][cols.customerType] || '').trim();
           const status = (data[i][cols.status] || '').toUpperCase().trim();
 
           if (status === 'OPEN') {
             const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
             const cleanTeam = team.replace(/@@/g, '@');
             if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
-            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer });
+            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer, custType });
             totalOpen++;
           } else if (status === 'GAMAS') {
             const team = findMappingTeam(workzone, 'GAMAS', mappings) || workzone || '-';
             const cleanTeam = team.replace(/@@/g, '@');
             if (!gamasTickets[cleanTeam]) gamasTickets[cleanTeam] = [];
-            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer });
+            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer, custType });
             totalGamas++;
           }
         }
@@ -656,7 +657,7 @@ bot.on('message', async (msg) => {
             const tickets = ticketsByTeam[teamName];
             response += `${idx + 1}. <b>${teamName}</b>\n`;
             tickets.forEach(t => {
-              response += `   ${t.incident}   ${t.ttr}\n`;
+              response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
             });
             response += '\n';
           });
@@ -670,7 +671,7 @@ bot.on('message', async (msg) => {
             const tickets = gamasTickets[teamName];
             response += `${idx + 1}. <b>${teamName}</b>\n`;
             tickets.forEach(t => {
-              response += `   ${t.incident}   ${t.ttr}\n`;
+              response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
             });
             response += '\n';
           });
