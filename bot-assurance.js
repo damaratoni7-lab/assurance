@@ -654,7 +654,7 @@ bot.on('message', async (msg) => {
           response += '<i>Tidak ada ticket yang masih OPEN</i>\n';
         } else {
           sortedTeams.forEach((teamName, idx) => {
-            const tickets = ticketsByTeam[teamName];
+            const tickets = ticketsByTeam[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
             response += `${idx + 1}. <b>${teamName}</b>\n`;
             tickets.forEach(t => {
               response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
@@ -668,7 +668,7 @@ bot.on('message', async (msg) => {
           response += `<b>Total GAMAS : ${totalGamas} tickets</b>\n\n`;
           const sortedGamas = Object.keys(gamasTickets).sort();
           sortedGamas.forEach((teamName, idx) => {
-            const tickets = gamasTickets[teamName];
+            const tickets = gamasTickets[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
             response += `${idx + 1}. <b>${teamName}</b>\n`;
             tickets.forEach(t => {
               response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
