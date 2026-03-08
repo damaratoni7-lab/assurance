@@ -603,7 +603,8 @@ bot.on('message', async (msg) => {
         const authResult = await checkAuthorization(username, ['ADMIN']);
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
-        const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET), 10000);
+        const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET, false), 10000);
+        console.log(`📊 /sisa_ticket: ${data.length} rows loaded`);
         const cols = getOrderColumns(data);
         const mappings = getWorkzoneMappings(data);
 
@@ -640,6 +641,8 @@ bot.on('message', async (msg) => {
             totalGamas++;
           }
         }
+
+        console.log(`📊 /sisa_ticket result: OPEN=${totalOpen}, GAMAS=${totalGamas}, teams=${Object.keys(ticketsByTeam).length}`);
 
         const sortedTeams = Object.keys(ticketsByTeam).sort();
 
