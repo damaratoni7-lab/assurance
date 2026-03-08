@@ -720,7 +720,7 @@ bot.on('message', async (msg) => {
         }
 
         // WARNING
-        response += `⚠️ <b>WARNING (< 1 Jam): ${warningList.length} tickets</b>\n`;
+        response += `⚠️ <b>WARNING (&lt; 1 Jam): ${warningList.length} tickets</b>\n`;
         if (warningList.length === 0) {
           response += '<i>Tidak ada ticket mendekati expired</i>\n\n';
         } else {
