@@ -57,7 +57,7 @@ const BULAN_ID = {
 
 // === HELPER: Auto-detect ORDER ASSURANCE column indices from header ===
 function getOrderColumns(data) {
-  const defaults = { incident: 1, teknisi: 2, ttrCustomer: 3, workzone: 4, customerType: 5, status: 9 };
+  const defaults = { incident: 1, teknisi: 2, ttrCustomer: 3, workzone: 4, customerType: 5, status: 9, hasilUkur: -1 };
   if (!data || data.length < 1) return defaults;
 
   const header = data[0] || [];
@@ -68,14 +68,15 @@ function getOrderColumns(data) {
     if (h === 'INCIDENT' || h === 'NO INCIDENT') cols.incident = c;
     else if (h === 'TEKNISI') cols.teknisi = c;
     else if (h.includes('TTR') && h.includes('CUSTOMER')) cols.ttrCustomer = c;
-    else if (h === 'WORKZONE' && c < 10) cols.workzone = c; // main workzone only
+    else if (h === 'WORKZONE' && c < 10) cols.workzone = c;
     else if (h === 'CUSTOMER TYPE' || h === 'CUSTOMER_TYPE') {
-      if (c < 10) cols.customerType = c; // first occurrence = main data
+      if (c < 10) cols.customerType = c;
     }
     else if (h === 'STATUS') cols.status = c;
+    else if (h === 'HASIL UKUR' || h === 'HASIL_UKUR') cols.hasilUkur = c;
   }
 
-  console.log(`📍 ORDER columns: INC=${cols.incident}, TEKNISI=${cols.teknisi}, TTR=${cols.ttrCustomer}, WZ=${cols.workzone}, CUST_TYPE=${cols.customerType}, STATUS=${cols.status}`);
+  console.log(`📍 ORDER columns: INC=${cols.incident}, TEKNISI=${cols.teknisi}, TTR=${cols.ttrCustomer}, WZ=${cols.workzone}, CUST_TYPE=${cols.customerType}, STATUS=${cols.status}, HASIL_UKUR=${cols.hasilUkur}`);
   return cols;
 }
 
@@ -572,6 +573,21 @@ bot.on('message', async (msg) => {
         }
 
         let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
+        confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
+        confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
+        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE\n`;
+        confirmMsg += `<b>Material:</b>\n`;
+        confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
+        confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
+        confirmMsg += `  • SOC: ${parsed.soc || '-'}\n`;
+        confirmMsg += `  • PSLAVE: ${parsed.pslave || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/8: ${parsed.passive1_8 || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/4: ${parsed.passive1_4 || '-'}\n`;
+        confirmMsg += `  • Pigtail: ${parsed.pigtail || '-'}\n`;
+        confirmMsg += `  • Adaptor: ${parsed.adaptor || '-'}\n`;
+        confirmMsg += `  • Roset: ${parsed.roset || '-'}\n`;
+        confirmMsg += `  • RJ 45: ${parsed.rj45 || '-'}\n`;
+        confirmMsg += `  • LAN: ${parsed.lan || '-'}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
@@ -611,38 +627,42 @@ bot.on('message', async (msg) => {
           const ttrCustomer = (data[i][cols.ttrCustomer] || '-').trim();
           const workzone = (data[i][cols.workzone] || '').trim();
           const custType = (data[i][cols.customerType] || '').trim();
+          const hasilUkur = cols.hasilUkur >= 0 ? (data[i][cols.hasilUkur] || '').trim() : '';
           const status = (data[i][cols.status] || '').toUpperCase().trim();
 
           if (status === 'OPEN') {
             const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
             const cleanTeam = team.replace(/@@/g, '@');
             if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
-            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer, custType });
+            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
             totalOpen++;
           } else if (status === 'GAMAS') {
             const team = findMappingTeam(workzone, 'GAMAS', mappings) || workzone || '-';
             const cleanTeam = team.replace(/@@/g, '@');
             if (!gamasTickets[cleanTeam]) gamasTickets[cleanTeam] = [];
-            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer, custType });
+            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
             totalGamas++;
           }
         }
 
         console.log(`📊 /sisa_ticket result: OPEN=${totalOpen}, GAMAS=${totalGamas}, teams=${Object.keys(ticketsByTeam).length}`);
 
+        const numEmoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
         const sortedTeams = Object.keys(ticketsByTeam).sort();
 
-        let response = `🔴 <b>SISA TICKET OPEN ${dayNameID}, ${dateStr} ${timeStr}</b>\n\n`;
-        response += `<b>Total OPEN : ${totalOpen} tickets</b>\n\n`;
+        let response = `🔴 <b>SISA TICKET OPEN</b>\n📅 ${dayNameID}, ${dateStr} | ${timeStr}\n\n`;
+        response += `🎫 <b>OPEN : ${totalOpen} tickets</b>\n\n`;
 
         if (sortedTeams.length === 0) {
           response += '<i>Tidak ada ticket yang masih OPEN</i>\n';
         } else {
           sortedTeams.forEach((teamName, idx) => {
             const tickets = ticketsByTeam[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
-            response += `${idx + 1}. <b>${teamName}</b>\n`;
+            const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
+            response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
             tickets.forEach(t => {
-              response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
+              const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
+              response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
             });
             response += '\n';
           });
@@ -650,13 +670,15 @@ bot.on('message', async (msg) => {
 
         // === GAMAS Section ===
         if (totalGamas > 0) {
-          response += `<b>Total GAMAS : ${totalGamas} tickets</b>\n\n`;
+          response += `🎫 <b>GAMAS : ${totalGamas} tickets</b>\n\n`;
           const sortedGamas = Object.keys(gamasTickets).sort();
           sortedGamas.forEach((teamName, idx) => {
             const tickets = gamasTickets[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
-            response += `${idx + 1}. <b>${teamName}</b>\n`;
+            const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
+            response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
             tickets.forEach(t => {
-              response += `   ${t.incident}   ${t.ttr}   ${t.custType}\n`;
+              const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
+              response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
             });
             response += '\n';
           });
@@ -724,32 +746,30 @@ bot.on('message', async (msg) => {
         expiredList.sort((a, b) => b.overtime - a.overtime);
         warningList.sort((a, b) => a.sisa - b.sisa);
 
-        let response = `📋 <b>CEK TTR - STATUS SEMUA TICKET OPEN</b>\n\n`;
+        let response = `⏱ <b>STATUS TTR - SEMUA TICKET OPEN</b>\n\n`;
 
         // EXPIRED
         response += `🔴 <b>EXPIRED: ${expiredList.length} tickets</b>\n`;
         if (expiredList.length === 0) {
           response += '<i>Tidak ada ticket expired</i>\n\n';
         } else {
-          expiredList.forEach((e, idx) => {
-            response += `${idx + 1}. <b>${e.incident}</b>\n`;
-            response += `   ${e.custType} (Max: ${e.maxTTR} Jam)\n`;
-            response += `   Elapsed: ${e.ttrStr} | Overtime: ${formatHours(e.overtime)}\n`;
-            response += `   Teknisi: ${e.team}\n\n`;
+          expiredList.forEach(e => {
+            response += `▸ ${e.incident} | ${e.ttrStr} | ${e.custType} (${e.maxTTR} Jam) | OT: +${formatHours(e.overtime)}\n`;
+            response += `  👷 ${e.team}\n`;
           });
+          response += '\n';
         }
 
         // WARNING
-        response += `⚠️ <b>WARNING (&lt; 1 Jam): ${warningList.length} tickets</b>\n`;
+        response += `⚠️ <b>MENDEKATI EXPIRED: ${warningList.length} tickets</b>\n`;
         if (warningList.length === 0) {
           response += '<i>Tidak ada ticket mendekati expired</i>\n\n';
         } else {
-          warningList.forEach((e, idx) => {
-            response += `${idx + 1}. <b>${e.incident}</b>\n`;
-            response += `   ${e.custType} (Max: ${e.maxTTR} Jam)\n`;
-            response += `   Elapsed: ${e.ttrStr} | Sisa: ${formatHours(e.sisa)}\n`;
-            response += `   Teknisi: ${e.team}\n\n`;
+          warningList.forEach(e => {
+            response += `▸ ${e.incident} | ${e.ttrStr} | ${e.custType} (${e.maxTTR} Jam) | Sisa: ${formatHours(e.sisa)}\n`;
+            response += `  👷 ${e.team}\n`;
           });
+          response += '\n';
         }
 
         // SAFE
@@ -786,11 +806,11 @@ bot.on('message', async (msg) => {
         }
 
         const entries = Object.entries(materialMap).filter(([_, c]) => c > 0).sort((a, b) => b[1] - a[1]);
-        let response = `📦 <b>PENGGUNAAN MATERIAL - KESELURUHAN</b>\n\n`;
+        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📦 <b>PENGGUNAAN MATERIAL</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         if (entries.length === 0) {
           response += '<i>Belum ada material yang dipakai</i>';
         } else {
-          entries.forEach(([mat, count]) => { response += `• <b>${mat}</b>: ${count} unit\n`; });
+          entries.forEach(([mat, count]) => { response += `📊 <b>${mat}</b> : ${count} unit\n`; });
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
@@ -827,12 +847,16 @@ bot.on('message', async (msg) => {
         const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
         const total = entries.reduce((sum, [_, c]) => sum + c, 0);
 
-        let response = `📊 <b>REKAP CLOSE - HARI INI</b>\n📅 ${todayStr}\n\n`;
+        const medal = ['🥇', '🥈', '🥉'];
+        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>REKAP CLOSE - HARI INI</b>\n📅 ${todayStr}\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         if (entries.length === 0) {
           response += '<i>Belum ada data hari ini</i>';
         } else {
-          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
-          response += `\n<b>Total: ${total} tickets</b>`;
+          entries.forEach(([tek, c], i) => {
+            const icon = i < 3 ? medal[i] : '🔸';
+            response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
+          });
+          response += `\n📋 <b>Total: ${total} tickets</b>`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
@@ -869,12 +893,16 @@ bot.on('message', async (msg) => {
         const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
         const total = entries.reduce((sum, [_, c]) => sum + c, 0);
 
-        let response = `� <b>REKAP CLOSE - BULAN INI</b>\n📅 ${bulanStr}\n\n`;
+        const medal = ['🥇', '🥈', '🥉'];
+        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>REKAP CLOSE - BULAN INI</b>\n📅 ${bulanStr}\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         if (entries.length === 0) {
           response += '<i>Belum ada data bulan ini</i>';
         } else {
-          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
-          response += `\n<b>Total: ${total} tickets</b>`;
+          entries.forEach(([tek, c], i) => {
+            const icon = i < 3 ? medal[i] : '🔸';
+            response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
+          });
+          response += `\n📋 <b>Total: ${total} tickets</b>`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
@@ -909,12 +937,16 @@ bot.on('message', async (msg) => {
         const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
         const total = entries.reduce((sum, [_, c]) => sum + c, 0);
 
-        let response = `📊 <b>REKAP CLOSE - TAHUN INI</b>\n📅 ${today.year}\n\n`;
+        const medal = ['🥇', '🥈', '🥉'];
+        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>REKAP CLOSE - TAHUN INI</b>\n📅 ${today.year}\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         if (entries.length === 0) {
           response += '<i>Belum ada data tahun ini</i>';
         } else {
-          entries.forEach(([tek, c]) => { response += `🔸 <b>${tek}</b>: ${c} tickets\n`; });
-          response += `\n<b>Total: ${total} tickets</b>`;
+          entries.forEach(([tek, c], i) => {
+            const icon = i < 3 ? medal[i] : '🔸';
+            response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
+          });
+          response += `\n📋 <b>Total: ${total} tickets</b>`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
