@@ -147,6 +147,30 @@ async function updateSheetCell(sheetName, cell, value) {
   });
 }
 
+// === HELPER: Batch update multiple cells (preserves formulas in skipped columns) ===
+async function batchUpdateCells(sheetName, updates) {
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    resource: {
+      valueInputOption: 'USER_ENTERED',
+      data: updates.map(u => ({
+        range: `'${sheetName}'!${u.range}`,
+        values: [[u.value]],
+      })),
+    },
+  });
+}
+
+// === HELPER: Find next row with empty incident column ===
+function findNextEmptyRow(data, incidentColIdx) {
+  for (let i = 1; i < data.length; i++) {
+    if (!(data[i][incidentColIdx] || '').trim()) {
+      return i + 1; // 1-based row number
+    }
+  }
+  return data.length + 1; // Append at end if no empty row found
+}
+
 // === HELPER: Send Telegram (with chunking) ===
 async function sendTelegram(chatId, text, options = {}) {
   const maxLength = 4000;
@@ -401,60 +425,7 @@ function extractWorkzoneFromODP(odp) {
   return match ? match[1].toUpperCase() : '';
 }
 
-// === HELPER: Get teknisi name mappings from ORDER ASSURANCE (column M/N area) ===
-function getTeknisiMappings(data) {
-  if (!data || data.length < 2) return {};
-  const header = data[0] || [];
 
-  // Auto-detect mapping columns from header
-  let nameCol = -1;   // Column with real teknisi names
-  let mappedCol = -1;  // Column with mapped telegram names
-
-  for (let c = 10; c < header.length; c++) {
-    const h = (header[c] || '').toUpperCase().trim();
-    if (h.includes('MAPPING') && h.includes('TEKNISI')) {
-      mappedCol = c;
-    }
-    if (h.includes('NAMA') && (h.includes('TEKNISI') || h.includes('REAL'))) {
-      nameCol = c;
-    }
-  }
-
-  // Fallback: Column N (13) for mapped names, Column M (12) for real names
-  if (mappedCol === -1) mappedCol = 13;
-  if (nameCol === -1) nameCol = mappedCol - 1;
-
-  console.log(`📍 Teknisi mapping columns: NAME=col ${nameCol}, MAPPED=col ${mappedCol}`);
-
-  const mapping = {};
-  for (let i = 1; i < data.length; i++) {
-    const realName = (data[i][nameCol] || '').trim();
-    const mappedName = (data[i][mappedCol] || '').trim();
-    if (realName && mappedName) {
-      mapping[realName.toUpperCase()] = mappedName;
-    }
-  }
-
-  console.log(`📍 Found ${Object.keys(mapping).length} teknisi mappings`);
-  return mapping;
-}
-
-// === HELPER: Map teknisi names using mapping table ===
-// Input: "SGI RIZKI MALIDDIN-SGI Demna Hendarsian"
-// Output: "@Palaklidah & @FH_demna_16060971" (if mapped)
-function mapTeknisiNames(teknisiStr, mappings) {
-  if (!teknisiStr) return '';
-  if (Object.keys(mappings).length === 0) return teknisiStr;
-
-  // Split by dash to get individual names
-  const names = teknisiStr.split('-').map(n => n.trim());
-  const mapped = names.map(name => {
-    const key = name.toUpperCase();
-    return mappings[key] || name;
-  });
-
-  return mapped.join(' & ');
-}
 
 // === BOT SETUP ===
 const PORT = process.env.PORT || 3002;
@@ -630,23 +601,11 @@ bot.on('message', async (msg) => {
           return;
         }
 
-        // Get ORDER ASSURANCE data for teknisi mapping
+        // Get ORDER ASSURANCE data
         const orderData = await getSheetData(ORDER_ASSURANCE_SHEET, false);
-
-        // Map teknisi names using column M/N mapping
-        const teknisiMappings = getTeknisiMappings(orderData);
-        const mappedTeknisi = mapTeknisiNames(tiket.teknisi, teknisiMappings);
-
-        // Extract workzone from ODP (e.g., ODP-SGI-FH/33 → SGI)
-        const workzone = extractWorkzoneFromODP(tiket.odp);
-
-        // Format tanggal saat ini
-        const tanggal = new Date().toLocaleDateString('id-ID', {
-          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta',
-        });
+        const orderCols = getOrderColumns(orderData);
 
         // Cek duplikat incident
-        const orderCols = getOrderColumns(orderData);
         for (let i = 1; i < orderData.length; i++) {
           const existingInc = (orderData[i][orderCols.incident] || '').trim().toUpperCase();
           if (existingInc === tiket.incident.toUpperCase()) {
@@ -655,31 +614,62 @@ bot.on('message', async (msg) => {
           }
         }
 
-        // Build row: A=tanggal, B=incident, C=teknisi, D='', E=workzone, F='', G=customerType, H=serviceNo, I=deviceName(ODP)
-        const row = [
-          tanggal,              // A - Tanggal
-          tiket.incident,       // B - Incident
-          mappedTeknisi,        // C - Teknisi (mapped)
-          '',                   // D - (skip)
-          workzone,             // E - Workzone
-          '',                   // F - (skip)
-          tiket.customerType,   // G - Customer Type
-          tiket.serviceNo,      // H - Service No
-          tiket.odp,            // I - Device Name (ODP)
+        // Extract workzone from ODP (e.g., ODP-SGI-FH/33 → SGI)
+        const workzone = extractWorkzoneFromODP(tiket.odp);
+
+        // Map teknisi using workzone → MAPPING TEAM
+        const mappings = getWorkzoneMappings(orderData);
+        const mappedTeknisi = findMappingTeam(workzone, 'OPEN', mappings) || tiket.teknisi;
+
+        // Format tanggal saat ini
+        const tanggal = new Date().toLocaleDateString('id-ID', {
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta',
+        });
+
+        // Format timestamp saat ini
+        const now = new Date();
+        const timestamp = now.toLocaleString('id-ID', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          timeZone: 'Asia/Jakarta', hour12: false,
+        });
+
+        // Find next row with empty incident (preserves formulas in D and L)
+        const nextRow = findNextEmptyRow(orderData, orderCols.incident);
+
+        // Batch update specific cells — SKIP kolom D (rumus) dan L (rumus)
+        const cellUpdates = [
+          { range: `A${nextRow}`, value: tanggal },              // A - Tanggal
+          { range: `B${nextRow}`, value: tiket.incident },       // B - Incident
+          { range: `C${nextRow}`, value: mappedTeknisi },        // C - Teknisi (mapped)
+          // D - SKIP (rumus TTR CUSTOMER)
+          { range: `E${nextRow}`, value: workzone },             // E - Workzone
+          { range: `F${nextRow}`, value: 'TSEL' },               // F - Customer Segment
+          { range: `G${nextRow}`, value: tiket.customerType },   // G - Customer Type
+          { range: `H${nextRow}`, value: tiket.serviceNo },      // H - Service No
+          { range: `I${nextRow}`, value: tiket.odp },            // I - Device Name (ODP)
+          { range: `J${nextRow}`, value: 'OPEN' },               // J - Status
+          { range: `K${nextRow}`, value: tiket.ttrCustomer },    // K - TTR Dashboard (durasi)
+          // L - SKIP (rumus NOW)
+          { range: `M${nextRow}`, value: timestamp },            // M - Timestamp
         ];
 
-        await withTimeout(appendSheetData(ORDER_ASSURANCE_SHEET, row), 10000);
+        await withTimeout(batchUpdateCells(ORDER_ASSURANCE_SHEET, cellUpdates), 10000);
         cache.orderAssuranceData = null; // Invalidate cache
 
-        console.log(`✅ Tiket baru recorded: ${tiket.incident} | Teknisi: ${mappedTeknisi} | WZ: ${workzone}`);
+        console.log(`✅ Tiket baru recorded at row ${nextRow}: ${tiket.incident} | Teknisi: ${mappedTeknisi} | WZ: ${workzone}`);
 
-        let confirmMsg = `✅ <b>Data Tiket Baru berhasil disimpan!</b>\n\n`;
+        let confirmMsg = `✅ <b>Data Tiket Baru berhasil disimpan!</b> (Row ${nextRow})\n\n`;
         confirmMsg += `📋 <b>Incident:</b> ${tiket.incident}\n`;
         confirmMsg += `👷 <b>Teknisi:</b> ${mappedTeknisi}\n`;
         confirmMsg += `📍 <b>Workzone:</b> ${workzone}\n`;
+        confirmMsg += `🏢 <b>Segment:</b> TSEL\n`;
         confirmMsg += `👤 <b>Customer Type:</b> ${tiket.customerType}\n`;
         confirmMsg += `📞 <b>Service No:</b> ${tiket.serviceNo}\n`;
-        confirmMsg += `📡 <b>Device:</b> ${tiket.odp}`;
+        confirmMsg += `📡 <b>Device:</b> ${tiket.odp}\n`;
+        confirmMsg += `📊 <b>Status:</b> OPEN\n`;
+        confirmMsg += `⏱ <b>TTR:</b> ${tiket.ttrCustomer}\n`;
+        confirmMsg += `🕐 <b>Timestamp:</b> ${timestamp}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
