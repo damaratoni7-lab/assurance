@@ -845,6 +845,7 @@ bot.on('message', async (msg) => {
           inputTimestamp, // P - Timestamp saat /INPUT
         ];
         await withTimeout(appendSheetData(ASSURANCE_SHEET, row), 10000);
+        cache.assuranceData = null; // Invalidate cache agar /rekap_hari langsung update
 
         // Auto-close di ORDER ASSURANCE + cek KAWAL TTR (COMPLY/NOT COMPLY)
         let orderClosed = false;
@@ -1278,7 +1279,6 @@ setTimeout(() => {
   console.log('🔄 Starting initial monitoring check...');
   autoFillTeknisi();
   checkTTRAlerts();
-  autoPostSisaTicket();
 
   // TTR check + Auto-fill setiap 5 menit
   setInterval(() => {
