@@ -572,6 +572,28 @@ async function checkTTRAlerts() {
       if (adminTags) msg += `cc bg ${adminTags}`;
       await sendTelegram(GROUP_CHAT_ID, msg);
       console.log(`⚠️ TTR WARNING alert: ${warningList.length} tickets`);
+
+      // DM ke setiap teknisi yang tiketnya mendekati expired
+      for (const entry of warningList) {
+        // Extract usernames dari team (e.g., "@user1 & @user2")
+        const usernames = entry.team.split(/\s*&\s*/).map(u => u.replace('@', '').trim().toLowerCase()).filter(u => u);
+        for (const uname of usernames) {
+          const dmChatId = userChatIds[uname];
+          if (dmChatId) {
+            let dmMsg = `⚠️ PERINGATAN TTR MENDEKATI EXPIRED!\n\n`;
+            dmMsg += `Incident: ${entry.incident}\n`;
+            dmMsg += `${entry.custType} (Max: ${entry.maxTTR} Jam)\n`;
+            dmMsg += `Elapsed: ${entry.ttrStr} | Sisa: ${formatHours(entry.sisa)}\n`;
+            dmMsg += `\nSegera selesaikan tiket ini!`;
+            try {
+              await sendTelegram(dmChatId, dmMsg);
+              console.log(`📩 DM warning sent to @${uname}`);
+            } catch (dmErr) {
+              console.log(`⚠️ Could not DM @${uname}: ${dmErr.message}`);
+            }
+          }
+        }
+      }
     }
 
     // Cleanup: remove closed incidents from alert state
