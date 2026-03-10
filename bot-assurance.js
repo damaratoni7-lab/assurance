@@ -1072,16 +1072,31 @@ bot.on('message', async (msg) => {
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
         const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
+        const orderData = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET), 10000);
         const today = getTodayJakarta();
         let map = {};
+        let incidents = [];
 
         for (let i = 1; i < data.length; i++) {
           const tanggal = (data[i][0] || '').trim();
           const teknisi = (data[i][14] || '-').trim();
+          const incident = (data[i][1] || '').trim();
           const d = parseIndonesianDate(tanggal);
           if (!d) continue;
           if (d.day === today.day && d.month === today.month && d.year === today.year) {
             map[teknisi] = (map[teknisi] || 0) + 1;
+            if (incident) incidents.push(incident.toUpperCase());
+          }
+        }
+
+        // Hitung COMPLY/NOT COMPLY dari ORDER ASSURANCE kolom R
+        let comply = 0, notComply = 0;
+        for (let i = 1; i < orderData.length; i++) {
+          const inc = (orderData[i][1] || '').trim().toUpperCase();
+          const kawal = (orderData[i][17] || '').trim().toUpperCase(); // Kolom R = index 17
+          if (incidents.includes(inc)) {
+            if (kawal === 'COMPLY') comply++;
+            else if (kawal === 'NOT COMPLY') notComply++;
           }
         }
 
@@ -1099,7 +1114,8 @@ bot.on('message', async (msg) => {
             const icon = i < 3 ? medal[i] : '🔸';
             response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
           });
-          response += `\n📋 <b>Total: ${total} tickets</b>`;
+          response += `\n📋 <b>Total: ${total} tickets</b>\n`;
+          response += `✅ COMPLY: ${comply} | ❌ NOT COMPLY: ${notComply}`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
@@ -1118,16 +1134,31 @@ bot.on('message', async (msg) => {
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
         const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
+        const orderData = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET), 10000);
         const today = getTodayJakarta();
         let map = {};
+        let incidents = [];
 
         for (let i = 1; i < data.length; i++) {
           const tanggal = (data[i][0] || '').trim();
           const teknisi = (data[i][14] || '-').trim();
+          const incident = (data[i][1] || '').trim();
           const d = parseIndonesianDate(tanggal);
           if (!d) continue;
           if (d.month === today.month && d.year === today.year) {
             map[teknisi] = (map[teknisi] || 0) + 1;
+            if (incident) incidents.push(incident.toUpperCase());
+          }
+        }
+
+        // Hitung COMPLY/NOT COMPLY
+        let comply = 0, notComply = 0;
+        for (let i = 1; i < orderData.length; i++) {
+          const inc = (orderData[i][1] || '').trim().toUpperCase();
+          const kawal = (orderData[i][17] || '').trim().toUpperCase();
+          if (incidents.includes(inc)) {
+            if (kawal === 'COMPLY') comply++;
+            else if (kawal === 'NOT COMPLY') notComply++;
           }
         }
 
@@ -1145,7 +1176,8 @@ bot.on('message', async (msg) => {
             const icon = i < 3 ? medal[i] : '🔸';
             response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
           });
-          response += `\n📋 <b>Total: ${total} tickets</b>`;
+          response += `\n📋 <b>Total: ${total} tickets</b>\n`;
+          response += `✅ COMPLY: ${comply} | ❌ NOT COMPLY: ${notComply}`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
@@ -1164,32 +1196,59 @@ bot.on('message', async (msg) => {
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
         const data = await withTimeout(getSheetData(ASSURANCE_SHEET), 10000);
+        const orderData = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET), 10000);
         const today = getTodayJakarta();
-        let map = {};
+
+        // Group by month, then by teknisi
+        const bulanNames = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+        let monthData = {}; // { month: { teknisi: count } }
+        let allIncidents = [];
+        let grandTotal = 0;
 
         for (let i = 1; i < data.length; i++) {
           const tanggal = (data[i][0] || '').trim();
           const teknisi = (data[i][14] || '-').trim();
+          const incident = (data[i][1] || '').trim();
           const d = parseIndonesianDate(tanggal);
           if (!d) continue;
           if (d.year === today.year) {
-            map[teknisi] = (map[teknisi] || 0) + 1;
+            if (!monthData[d.month]) monthData[d.month] = {};
+            monthData[d.month][teknisi] = (monthData[d.month][teknisi] || 0) + 1;
+            grandTotal++;
+            if (incident) allIncidents.push(incident.toUpperCase());
           }
         }
 
-        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
-        const total = entries.reduce((sum, [_, c]) => sum + c, 0);
+        // Hitung COMPLY/NOT COMPLY total
+        let comply = 0, notComply = 0;
+        for (let i = 1; i < orderData.length; i++) {
+          const inc = (orderData[i][1] || '').trim().toUpperCase();
+          const kawal = (orderData[i][17] || '').trim().toUpperCase();
+          if (allIncidents.includes(inc)) {
+            if (kawal === 'COMPLY') comply++;
+            else if (kawal === 'NOT COMPLY') notComply++;
+          }
+        }
 
         const medal = ['🥇', '🥈', '🥉'];
-        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>REKAP CLOSE - TAHUN INI</b>\n📅 ${today.year}\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-        if (entries.length === 0) {
+        let response = `━━━━━━━━━━━━━━━━━━━━━━\n📊 <b>REKAP CLOSE - TAHUN ${today.year}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+        const sortedMonths = Object.keys(monthData).map(Number).sort((a, b) => a - b);
+        if (sortedMonths.length === 0) {
           response += '<i>Belum ada data tahun ini</i>';
         } else {
-          entries.forEach(([tek, c], i) => {
-            const icon = i < 3 ? medal[i] : '🔸';
-            response += `${icon} <b>${tek}</b> : ${c} tickets\n`;
+          sortedMonths.forEach(month => {
+            const entries = Object.entries(monthData[month]).sort((a, b) => b[1] - a[1]);
+            const monthTotal = entries.reduce((sum, [_, c]) => sum + c, 0);
+            response += `📅 <b>${bulanNames[month]} ${today.year}</b> [${monthTotal} tickets]\n`;
+            entries.forEach(([tek, c], i) => {
+              const icon = i < 3 ? medal[i] : '🔸';
+              response += `  ${icon} ${tek} : ${c}\n`;
+            });
+            response += '\n';
           });
-          response += `\n📋 <b>Total: ${total} tickets</b>`;
+          response += `📋 <b>Grand Total: ${grandTotal} tickets</b>\n`;
+          response += `✅ COMPLY: ${comply} | ❌ NOT COMPLY: ${notComply}`;
         }
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
