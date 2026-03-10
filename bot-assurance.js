@@ -716,8 +716,12 @@ bot.on('message', async (msg) => {
 
   if (!text) return;
 
-  // Store chat ID for potential DM
-  if (username) userChatIds[username.replace('@', '').toLowerCase()] = chatId;
+  // Store chat ID for potential DM (from private and group)
+  if (username) {
+    const unameLower = username.replace('@', '').toLowerCase();
+    // Simpan user's Telegram ID untuk DM (msg.from.id selalu user ID, bukan group ID)
+    if (msg.from.id) userChatIds[unameLower] = msg.from.id;
+  }
 
   console.log(`📨 [${groupType}] [@${username}] ${text.substring(0, 60)}`);
 
@@ -827,31 +831,59 @@ bot.on('message', async (msg) => {
         const missing = ['incidentNo', 'closeDesc'].filter(f => !parsed[f]);
         if (missing.length > 0) return sendTelegram(chatId, `❌ Field wajib: ${missing.join(', ')}`, { reply_to_message_id: msgId });
 
-        // Simpan ke PROGRES ASSURANCE
+        // Simpan ke PROGRES ASSURANCE (termasuk timestamp di kolom P)
+        const inputTimestamp = new Date().toLocaleString('id-ID', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          timeZone: 'Asia/Jakarta', hour12: false,
+        });
         const row = [
           parsed.dateCreated, parsed.incidentNo,
           parsed.dropcore, parsed.patchcord, parsed.soc, parsed.pslave,
           parsed.passive1_8, parsed.passive1_4, parsed.pigtail, parsed.adaptor,
           parsed.roset, parsed.rj45, parsed.lan, parsed.closeDesc, parsed.teknisi,
+          inputTimestamp, // P - Timestamp saat /INPUT
         ];
         await withTimeout(appendSheetData(ASSURANCE_SHEET, row), 10000);
 
-        // Auto-close di ORDER ASSURANCE
+        // Auto-close di ORDER ASSURANCE + cek KAWAL TTR (COMPLY/NOT COMPLY)
         let orderClosed = false;
+        let kawalTTR = '';
         try {
           const orderData = await getSheetData(ORDER_ASSURANCE_SHEET, false);
           const orderCols = getOrderColumns(orderData);
-          // Convert column index to letter (e.g., 9 -> J, 8 -> I)
           const statusColLetter = String.fromCharCode(65 + orderCols.status);
           for (let i = 1; i < orderData.length; i++) {
             const incInOrder = (orderData[i][orderCols.incident] || '').trim().toUpperCase();
             if (incInOrder === parsed.incidentNo) {
-              await updateSheetCell(ORDER_ASSURANCE_SHEET, `${statusColLetter}${i + 1}`, 'CLOSE');
+              // Cek TTR untuk KAWAL TTR
+              const ttrStr = (orderData[i][orderCols.ttrCustomer] || '').trim();
+              const custType = (orderData[i][orderCols.customerType] || '').trim().toUpperCase();
+              const elapsed = parseTTRHours(ttrStr);
+
+              // Cari max TTR dari tabel berdasarkan customer type
+              let maxTTR = null;
+              for (const [type, hours] of Object.entries(TTR_TABLE)) {
+                if (type.toUpperCase() === custType) { maxTTR = hours; break; }
+              }
+
+              // Tentukan COMPLY atau NOT COMPLY
+              if (elapsed !== null && maxTTR !== null) {
+                kawalTTR = elapsed <= maxTTR ? 'COMPLY' : 'NOT COMPLY';
+              } else {
+                kawalTTR = 'COMPLY'; // Default jika data tidak lengkap
+              }
+
+              // Update STATUS ke CLOSE dan KAWAL TTR ke kolom R
+              await batchUpdateCells(ORDER_ASSURANCE_SHEET, [
+                { range: `${statusColLetter}${i + 1}`, value: 'CLOSE' },
+                { range: `R${i + 1}`, value: kawalTTR },
+              ]);
               cache.orderAssuranceData = null;
               alertState.warned.delete(parsed.incidentNo);
               alertState.expired.delete(parsed.incidentNo);
               orderClosed = true;
-              console.log(`✅ Auto-close ORDER: ${parsed.incidentNo} row ${i + 1} col ${statusColLetter}`);
+              console.log(`✅ Auto-close ORDER: ${parsed.incidentNo} row ${i + 1} | KAWAL TTR: ${kawalTTR}`);
               break;
             }
           }
@@ -862,7 +894,7 @@ bot.on('message', async (msg) => {
         let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
         confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
         confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
-        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE\n`;
+        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE | <b>KAWAL TTR:</b> ${kawalTTR}\n`;
         confirmMsg += `<b>Material:</b>\n`;
         confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
         confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
