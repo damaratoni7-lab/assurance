@@ -363,6 +363,99 @@ function parseAssurance(text, username) {
   return data;
 }
 
+// === HELPER: Parse tiket baru message ===
+function parseTicketBaru(text) {
+  if (!text.includes('Data Tiket Baru Diterima')) return null;
+
+  const result = {};
+  const patterns = {
+    teknisi: /Teknisi:\s*(.+)/i,
+    incident: /Incident:\s*(INC\d+)/i,
+    ttrCustomer: /TTR Customer:\s*(.+)/i,
+    reportedDate: /Reported Date:\s*(.+)/i,
+    tiketGamas: /Tiket gamas:\s*(.*)/i,
+    contactPhone: /Contact Phone:\s*(.+)/i,
+    contactName: /Contact name:\s*(.+)/i,
+    customerType: /Customer Type:\s*(.+)/i,
+    serviceNo: /Service no:\s*(.+)/i,
+    odp: /ODP:\s*(.+)/i,
+    bookingDate: /Booking date:\s*(.+)/i,
+    hasilUkur: /Hasil Ukur:\s*(.+)/i,
+    guaranteStatus: /Guarante Status:\s*(.+)/i,
+    symtom: /Symtom:\s*(.+)/i,
+  };
+
+  for (const [key, pattern] of Object.entries(patterns)) {
+    const match = text.match(pattern);
+    result[key] = match ? match[1].trim() : '';
+  }
+
+  return result;
+}
+
+// === HELPER: Extract workzone from ODP string ===
+// ODP-SGI-FH/33 FH/D02/33.01 → SGI
+function extractWorkzoneFromODP(odp) {
+  if (!odp) return '';
+  const match = odp.match(/ODP-([A-Z0-9]+)-/i);
+  return match ? match[1].toUpperCase() : '';
+}
+
+// === HELPER: Get teknisi name mappings from ORDER ASSURANCE (column M/N area) ===
+function getTeknisiMappings(data) {
+  if (!data || data.length < 2) return {};
+  const header = data[0] || [];
+
+  // Auto-detect mapping columns from header
+  let nameCol = -1;   // Column with real teknisi names
+  let mappedCol = -1;  // Column with mapped telegram names
+
+  for (let c = 10; c < header.length; c++) {
+    const h = (header[c] || '').toUpperCase().trim();
+    if (h.includes('MAPPING') && h.includes('TEKNISI')) {
+      mappedCol = c;
+    }
+    if (h.includes('NAMA') && (h.includes('TEKNISI') || h.includes('REAL'))) {
+      nameCol = c;
+    }
+  }
+
+  // Fallback: Column N (13) for mapped names, Column M (12) for real names
+  if (mappedCol === -1) mappedCol = 13;
+  if (nameCol === -1) nameCol = mappedCol - 1;
+
+  console.log(`📍 Teknisi mapping columns: NAME=col ${nameCol}, MAPPED=col ${mappedCol}`);
+
+  const mapping = {};
+  for (let i = 1; i < data.length; i++) {
+    const realName = (data[i][nameCol] || '').trim();
+    const mappedName = (data[i][mappedCol] || '').trim();
+    if (realName && mappedName) {
+      mapping[realName.toUpperCase()] = mappedName;
+    }
+  }
+
+  console.log(`📍 Found ${Object.keys(mapping).length} teknisi mappings`);
+  return mapping;
+}
+
+// === HELPER: Map teknisi names using mapping table ===
+// Input: "SGI RIZKI MALIDDIN-SGI Demna Hendarsian"
+// Output: "@Palaklidah & @FH_demna_16060971" (if mapped)
+function mapTeknisiNames(teknisiStr, mappings) {
+  if (!teknisiStr) return '';
+  if (Object.keys(mappings).length === 0) return teknisiStr;
+
+  // Split by dash to get individual names
+  const names = teknisiStr.split('-').map(n => n.trim());
+  const mapped = names.map(name => {
+    const key = name.toUpperCase();
+    return mappings[key] || name;
+  });
+
+  return mapped.join(' & ');
+}
+
 // === BOT SETUP ===
 const PORT = process.env.PORT || 3002;
 const RAILWAY_STATIC_URL = process.env.RAILWAY_STATIC_URL;
@@ -517,7 +610,7 @@ bot.on('message', async (msg) => {
   const username = msg.from.username || '';
   const groupType = msg.chat.type;
 
-  if (!text || !text.startsWith('/')) return;
+  if (!text) return;
 
   // Store chat ID for potential DM
   if (username) userChatIds[username.replace('@', '').toLowerCase()] = chatId;
@@ -525,6 +618,78 @@ bot.on('message', async (msg) => {
   console.log(`📨 [${groupType}] [@${username}] ${text.substring(0, 60)}`);
 
   try {
+    // ============================================================
+    // AUTO-INPUT TIKET BARU ke ORDER ASSURANCE
+    // Deteksi pesan "Data Tiket Baru Diterima" (non-command)
+    // ============================================================
+    if (text.includes('Data Tiket Baru Diterima')) {
+      try {
+        const tiket = parseTicketBaru(text);
+        if (!tiket || !tiket.incident) {
+          console.log('⚠️ Tiket baru detected but could not parse incident');
+          return;
+        }
+
+        // Get ORDER ASSURANCE data for teknisi mapping
+        const orderData = await getSheetData(ORDER_ASSURANCE_SHEET, false);
+
+        // Map teknisi names using column M/N mapping
+        const teknisiMappings = getTeknisiMappings(orderData);
+        const mappedTeknisi = mapTeknisiNames(tiket.teknisi, teknisiMappings);
+
+        // Extract workzone from ODP (e.g., ODP-SGI-FH/33 → SGI)
+        const workzone = extractWorkzoneFromODP(tiket.odp);
+
+        // Format tanggal saat ini
+        const tanggal = new Date().toLocaleDateString('id-ID', {
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta',
+        });
+
+        // Cek duplikat incident
+        const orderCols = getOrderColumns(orderData);
+        for (let i = 1; i < orderData.length; i++) {
+          const existingInc = (orderData[i][orderCols.incident] || '').trim().toUpperCase();
+          if (existingInc === tiket.incident.toUpperCase()) {
+            console.log(`⚠️ Duplicate incident ${tiket.incident} - skipping`);
+            return sendTelegram(chatId, `⚠️ Incident <b>${tiket.incident}</b> sudah ada di ORDER ASSURANCE.`, { reply_to_message_id: msgId });
+          }
+        }
+
+        // Build row: A=tanggal, B=incident, C=teknisi, D='', E=workzone, F='', G=customerType, H=serviceNo, I=deviceName(ODP)
+        const row = [
+          tanggal,              // A - Tanggal
+          tiket.incident,       // B - Incident
+          mappedTeknisi,        // C - Teknisi (mapped)
+          '',                   // D - (skip)
+          workzone,             // E - Workzone
+          '',                   // F - (skip)
+          tiket.customerType,   // G - Customer Type
+          tiket.serviceNo,      // H - Service No
+          tiket.odp,            // I - Device Name (ODP)
+        ];
+
+        await withTimeout(appendSheetData(ORDER_ASSURANCE_SHEET, row), 10000);
+        cache.orderAssuranceData = null; // Invalidate cache
+
+        console.log(`✅ Tiket baru recorded: ${tiket.incident} | Teknisi: ${mappedTeknisi} | WZ: ${workzone}`);
+
+        let confirmMsg = `✅ <b>Data Tiket Baru berhasil disimpan!</b>\n\n`;
+        confirmMsg += `📋 <b>Incident:</b> ${tiket.incident}\n`;
+        confirmMsg += `👷 <b>Teknisi:</b> ${mappedTeknisi}\n`;
+        confirmMsg += `📍 <b>Workzone:</b> ${workzone}\n`;
+        confirmMsg += `👤 <b>Customer Type:</b> ${tiket.customerType}\n`;
+        confirmMsg += `📞 <b>Service No:</b> ${tiket.serviceNo}\n`;
+        confirmMsg += `📡 <b>Device:</b> ${tiket.odp}`;
+
+        return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
+      } catch (err) {
+        console.error('❌ Tiket Baru Error:', err.message);
+        return sendTelegram(chatId, `❌ Error menyimpan tiket: ${err.message}`, { reply_to_message_id: msgId });
+      }
+    }
+
+    // Skip non-command messages after tiket baru check
+    if (!text.startsWith('/')) return;
     // ============================================================
     // /INPUT - Input data assurance + auto-close di ORDER ASSURANCE
     // ============================================================
@@ -573,7 +738,21 @@ bot.on('message', async (msg) => {
         }
 
         let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
-        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> CLOSE\n`;
+        confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
+        confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
+        if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE\n`;
+        confirmMsg += `<b>Material:</b>\n`;
+        confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
+        confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
+        confirmMsg += `  • SOC: ${parsed.soc || '-'}\n`;
+        confirmMsg += `  • PSLAVE: ${parsed.pslave || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/8: ${parsed.passive1_8 || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/4: ${parsed.passive1_4 || '-'}\n`;
+        confirmMsg += `  • Pigtail: ${parsed.pigtail || '-'}\n`;
+        confirmMsg += `  • Adaptor: ${parsed.adaptor || '-'}\n`;
+        confirmMsg += `  • Roset: ${parsed.roset || '-'}\n`;
+        confirmMsg += `  • RJ 45: ${parsed.rj45 || '-'}\n`;
+        confirmMsg += `  • LAN: ${parsed.lan || '-'}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
