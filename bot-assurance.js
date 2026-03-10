@@ -499,6 +499,11 @@ async function checkTTRAlerts() {
     const admins = await getActiveAdmins();
     const adminTags = admins.map(a => `@${a}`).join(' ');
 
+    let expiredList = [];
+    let warningList = [];
+    let hasNewExpired = false;
+    let hasNewWarning = false;
+
     for (let i = 1; i < data.length; i++) {
       const incident = (data[i][cols.incident] || '').trim();
       const ttrStr = (data[i][cols.ttrCustomer] || '').trim();
@@ -511,7 +516,6 @@ async function checkTTRAlerts() {
       const elapsed = parseTTRHours(ttrStr);
       if (elapsed === null) continue;
 
-      // Find matching customer type in TTR_TABLE (case-insensitive)
       let maxTTR = null;
       for (const [type, hours] of Object.entries(TTR_TABLE)) {
         if (type.toUpperCase() === custType) { maxTTR = hours; break; }
@@ -519,42 +523,55 @@ async function checkTTRAlerts() {
       if (maxTTR === null) continue;
 
       const team = findMappingTeam(workzone, status, mappings) || (data[i][cols.teknisi] || '-').trim();
-      // Clean team from double @
       const cleanTeam = team.replace(/@@/g, '@');
 
       // === EXPIRED ===
-      if (elapsed >= maxTTR && !alertState.expired.has(incident)) {
-        alertState.expired.add(incident);
-        alertState.warned.delete(incident);
-
+      if (elapsed >= maxTTR) {
         const overtime = elapsed - maxTTR;
-        let msg = `🔴 <b>TTR EXPIRED!</b>\n\n`;
-        msg += `<b>Incident:</b> ${incident}\n`;
-        msg += `<b>Customer Type:</b> ${custType} (Max: ${maxTTR} Jam)\n`;
-        msg += `<b>Elapsed:</b> ${ttrStr}\n`;
-        msg += `<b>Overtime:</b> ${formatHours(overtime)}\n\n`;
-        msg += `<b>Teknisi:</b> ${cleanTeam}\n`;
-        if (adminTags) msg += `<b>Admin:</b> ${adminTags}`;
-
-        await sendTelegram(GROUP_CHAT_ID, msg);
-        console.log(`🔴 TTR EXPIRED: ${incident} (${elapsed.toFixed(1)}h / ${maxTTR}h)`);
+        expiredList.push({ incident, ttrStr, custType, maxTTR, overtime, team: cleanTeam });
+        if (!alertState.expired.has(incident)) {
+          hasNewExpired = true;
+          alertState.expired.add(incident);
+          alertState.warned.delete(incident);
+        }
       }
       // === WARNING (1 jam sebelum expired) ===
-      else if (elapsed >= maxTTR - 1 && elapsed < maxTTR && !alertState.warned.has(incident)) {
-        alertState.warned.add(incident);
-
+      else if (elapsed >= maxTTR - 1 && elapsed < maxTTR) {
         const sisa = maxTTR - elapsed;
-        let msg = `⚠️ <b>TTR WARNING - MENDEKATI EXPIRED!</b>\n\n`;
-        msg += `<b>Incident:</b> ${incident}\n`;
-        msg += `<b>Customer Type:</b> ${custType} (Max: ${maxTTR} Jam)\n`;
-        msg += `<b>Elapsed:</b> ${ttrStr}\n`;
-        msg += `<b>Sisa:</b> ${formatHours(sisa)}\n\n`;
-        msg += `<b>Teknisi:</b> ${cleanTeam}\n`;
-        if (adminTags) msg += `<b>Admin:</b> ${adminTags}`;
-
-        await sendTelegram(GROUP_CHAT_ID, msg);
-        console.log(`⚠️ TTR WARNING: ${incident} (${elapsed.toFixed(1)}h / ${maxTTR}h)`);
+        warningList.push({ incident, ttrStr, custType, maxTTR, sisa, team: cleanTeam });
+        if (!alertState.warned.has(incident)) {
+          hasNewWarning = true;
+          alertState.warned.add(incident);
+        }
       }
+    }
+
+    // Kirim alert EXPIRED jika ada ticket baru yang expired
+    if (hasNewExpired && expiredList.length > 0) {
+      expiredList.sort((a, b) => b.overtime - a.overtime);
+      let msg = `🔴 EXPIRED: ${expiredList.length} tickets\n`;
+      expiredList.forEach(e => {
+        msg += `▸ ${e.incident} | ${e.ttrStr} | ${e.custType} (${e.maxTTR} Jam) | OT: +${formatHours(e.overtime)}\n`;
+        msg += `  👷 ${e.team}\n`;
+      });
+      if (adminTags) msg += `\ncc bg ${adminTags}`;
+      await sendTelegram(GROUP_CHAT_ID, msg);
+      console.log(`🔴 TTR EXPIRED alert: ${expiredList.length} tickets`);
+    }
+
+    // Kirim alert WARNING jika ada ticket baru yang mendekati expired
+    if (hasNewWarning && warningList.length > 0) {
+      warningList.sort((a, b) => a.sisa - b.sisa);
+      let msg = `⚠️ MENDEKATI EXPIRED:\n\n`;
+      warningList.forEach((e, idx) => {
+        msg += `${idx + 1}. ${e.incident}\n`;
+        msg += `   ${e.custType} (Max: ${e.maxTTR} Jam)\n`;
+        msg += `   Elapsed: ${e.ttrStr} | Sisa: ${formatHours(e.sisa)}\n`;
+        msg += `   Teknisi: ${e.team}\n\n`;
+      });
+      if (adminTags) msg += `cc bg ${adminTags}`;
+      await sendTelegram(GROUP_CHAT_ID, msg);
+      console.log(`⚠️ TTR WARNING alert: ${warningList.length} tickets`);
     }
 
     // Cleanup: remove closed incidents from alert state
@@ -568,6 +585,100 @@ async function checkTTRAlerts() {
 
   } catch (error) {
     console.error('❌ TTR check error:', error.message);
+  }
+}
+
+// === AUTO-POST: Build sisa ticket report (reusable) ===
+async function buildSisaTicketReport() {
+  const data = await getSheetData(ORDER_ASSURANCE_SHEET, false);
+  if (!data || data.length < 2) return null;
+
+  const cols = getOrderColumns(data);
+  const mappings = getWorkzoneMappings(data);
+
+  const now = new Date();
+  const dayNameID = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUMAT', 'SABTU'][now.getDay()];
+  const dateStr = now.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' }).toUpperCase();
+  const timeStr = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' });
+
+  let ticketsByTeam = {};
+  let totalOpen = 0;
+  let gamasTickets = {};
+  let totalGamas = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const incident = (data[i][cols.incident] || '-').trim();
+    const ttrCustomer = (data[i][cols.ttrCustomer] || '-').trim();
+    const workzone = (data[i][cols.workzone] || '').trim();
+    const custType = (data[i][cols.customerType] || '').trim();
+    const hasilUkur = cols.hasilUkur >= 0 ? (data[i][cols.hasilUkur] || '').trim() : '';
+    const status = (data[i][cols.status] || '').toUpperCase().trim();
+
+    if (status === 'OPEN') {
+      const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
+      const cleanTeam = team.replace(/@@/g, '@');
+      if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
+      ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
+      totalOpen++;
+    } else if (status === 'GAMAS') {
+      const team = findMappingTeam(workzone, 'GAMAS', mappings) || workzone || '-';
+      const cleanTeam = team.replace(/@@/g, '@');
+      if (!gamasTickets[cleanTeam]) gamasTickets[cleanTeam] = [];
+      gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
+      totalGamas++;
+    }
+  }
+
+  const numEmoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+  const sortedTeams = Object.keys(ticketsByTeam).sort();
+
+  let response = `🔴 <b>SISA TICKET OPEN</b>\n📅 ${dayNameID}, ${dateStr} | ${timeStr}\n\n`;
+  response += `🎫 <b>OPEN : ${totalOpen} tickets</b>\n\n`;
+
+  if (sortedTeams.length === 0) {
+    response += '<i>Tidak ada ticket yang masih OPEN</i>\n';
+  } else {
+    sortedTeams.forEach((teamName, idx) => {
+      const tickets = ticketsByTeam[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
+      const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
+      response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
+      tickets.forEach(t => {
+        const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
+        response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
+      });
+      response += '\n';
+    });
+  }
+
+  if (totalGamas > 0) {
+    response += `🎫 <b>GAMAS : ${totalGamas} tickets</b>\n\n`;
+    const sortedGamas = Object.keys(gamasTickets).sort();
+    sortedGamas.forEach((teamName, idx) => {
+      const tickets = gamasTickets[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
+      const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
+      response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
+      tickets.forEach(t => {
+        const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
+        response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
+      });
+      response += '\n';
+    });
+  }
+
+  return response;
+}
+
+// === AUTO-POST: Kirim sisa ticket ke group setiap 1 jam ===
+async function autoPostSisaTicket() {
+  if (!GROUP_CHAT_ID) return;
+  try {
+    const report = await buildSisaTicketReport();
+    if (report) {
+      await sendTelegram(GROUP_CHAT_ID, report);
+      console.log('📊 Auto-post sisa ticket ke group');
+    }
+  } catch (error) {
+    console.error('❌ Auto-post sisa ticket error:', error.message);
   }
 }
 
@@ -758,85 +869,8 @@ bot.on('message', async (msg) => {
         const authResult = await checkAuthorization(username, ['ADMIN']);
         if (!authResult.authorized) return sendTelegram(chatId, authResult.message, { reply_to_message_id: msgId });
 
-        const data = await withTimeout(getSheetData(ORDER_ASSURANCE_SHEET, false), 10000);
-        console.log(`📊 /sisa_ticket: ${data.length} rows loaded`);
-        const cols = getOrderColumns(data);
-        const mappings = getWorkzoneMappings(data);
-
-        const now = new Date();
-        const dayNameID = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUMAT', 'SABTU'][now.getDay()];
-        const dateStr = now.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' }).toUpperCase();
-        const timeStr = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' });
-
-        // Group OPEN tickets by mapping team
-        let ticketsByTeam = {};
-        let totalOpen = 0;
-
-        // Group GAMAS tickets separately
-        let gamasTickets = {};
-        let totalGamas = 0;
-
-        for (let i = 1; i < data.length; i++) {
-          const incident = (data[i][cols.incident] || '-').trim();
-          const ttrCustomer = (data[i][cols.ttrCustomer] || '-').trim();
-          const workzone = (data[i][cols.workzone] || '').trim();
-          const custType = (data[i][cols.customerType] || '').trim();
-          const hasilUkur = cols.hasilUkur >= 0 ? (data[i][cols.hasilUkur] || '').trim() : '';
-          const status = (data[i][cols.status] || '').toUpperCase().trim();
-
-          if (status === 'OPEN') {
-            const team = findMappingTeam(workzone, status, mappings) || workzone || '-';
-            const cleanTeam = team.replace(/@@/g, '@');
-            if (!ticketsByTeam[cleanTeam]) ticketsByTeam[cleanTeam] = [];
-            ticketsByTeam[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
-            totalOpen++;
-          } else if (status === 'GAMAS') {
-            const team = findMappingTeam(workzone, 'GAMAS', mappings) || workzone || '-';
-            const cleanTeam = team.replace(/@@/g, '@');
-            if (!gamasTickets[cleanTeam]) gamasTickets[cleanTeam] = [];
-            gamasTickets[cleanTeam].push({ incident, ttr: ttrCustomer, custType, hasilUkur });
-            totalGamas++;
-          }
-        }
-
-        console.log(`📊 /sisa_ticket result: OPEN=${totalOpen}, GAMAS=${totalGamas}, teams=${Object.keys(ticketsByTeam).length}`);
-
-        const numEmoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-        const sortedTeams = Object.keys(ticketsByTeam).sort();
-
-        let response = `🔴 <b>SISA TICKET OPEN</b>\n📅 ${dayNameID}, ${dateStr} | ${timeStr}\n\n`;
-        response += `🎫 <b>OPEN : ${totalOpen} tickets</b>\n\n`;
-
-        if (sortedTeams.length === 0) {
-          response += '<i>Tidak ada ticket yang masih OPEN</i>\n';
-        } else {
-          sortedTeams.forEach((teamName, idx) => {
-            const tickets = ticketsByTeam[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
-            const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
-            response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
-            tickets.forEach(t => {
-              const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
-              response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
-            });
-            response += '\n';
-          });
-        }
-
-        // === GAMAS Section ===
-        if (totalGamas > 0) {
-          response += `🎫 <b>GAMAS : ${totalGamas} tickets</b>\n\n`;
-          const sortedGamas = Object.keys(gamasTickets).sort();
-          sortedGamas.forEach((teamName, idx) => {
-            const tickets = gamasTickets[teamName].sort((a, b) => (parseTTRHours(a.ttr) || 0) - (parseTTRHours(b.ttr) || 0));
-            const num = idx < 10 ? numEmoji[idx] : `${idx + 1}.`;
-            response += `${num} <b>${teamName}</b> [${tickets.length}]\n`;
-            tickets.forEach(t => {
-              const hu = t.hasilUkur ? ` | ${t.hasilUkur}` : '';
-              response += `   🔹 ${t.incident} | ${t.ttr} | ${t.custType}${hu}\n`;
-            });
-            response += '\n';
-          });
-        }
+        const response = await withTimeout(buildSisaTicketReport(), 10000);
+        if (!response) return sendTelegram(chatId, '<i>Tidak ada data</i>', { reply_to_message_id: msgId });
 
         return sendTelegram(chatId, response, { reply_to_message_id: msgId });
       } catch (err) {
@@ -1180,6 +1214,7 @@ console.log(`Mode: ${USE_WEBHOOK ? 'Webhook' : 'Polling'}`);
 console.log('═'.repeat(50));
 console.log('✅ Auto-Cache Enabled (5 min expiry)');
 console.log('✅ TTR Monitoring Enabled (5 min interval)');
+console.log('✅ Auto-Post Sisa Ticket Enabled (1 jam interval)');
 console.log('✅ Auto-Fill Teknisi Enabled');
 console.log('✅ Timeout Protection Enabled');
 console.log('═'.repeat(50));
@@ -1189,10 +1224,16 @@ setTimeout(() => {
   console.log('🔄 Starting initial monitoring check...');
   autoFillTeknisi();
   checkTTRAlerts();
+  autoPostSisaTicket();
 
-  // Then every 5 minutes 
+  // TTR check + Auto-fill setiap 5 menit
   setInterval(() => {
     autoFillTeknisi();
     checkTTRAlerts();
   }, 5 * 60 * 1000);
+
+  // Auto-post sisa ticket ke group setiap 1 jam
+  setInterval(() => {
+    autoPostSisaTicket();
+  }, 60 * 60 * 1000);
 }, 10000);
