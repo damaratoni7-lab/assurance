@@ -626,13 +626,12 @@ bot.on('message', async (msg) => {
           weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta',
         });
 
-        // Format timestamp saat ini
+        // Format timestamp saat ini (hanya waktu HH:mm:ss)
         const now = new Date();
-        const timestamp = now.toLocaleString('id-ID', {
-          day: '2-digit', month: '2-digit', year: 'numeric',
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
-          timeZone: 'Asia/Jakarta', hour12: false,
-        });
+        const jam = String(now.toLocaleString('id-ID', { hour: '2-digit', timeZone: 'Asia/Jakarta', hour12: false })).padStart(2, '0');
+        const menit = String(now.toLocaleString('id-ID', { minute: '2-digit', timeZone: 'Asia/Jakarta' })).padStart(2, '0');
+        const detik = String(now.toLocaleString('id-ID', { second: '2-digit', timeZone: 'Asia/Jakarta' })).padStart(2, '0');
+        const timestamp = `${jam}:${menit}:${detik}`;
 
         // Find next row with empty incident (preserves formulas in D and L)
         const nextRow = findNextEmptyRow(orderData, orderCols.incident);
@@ -649,7 +648,7 @@ bot.on('message', async (msg) => {
           { range: `H${nextRow}`, value: tiket.serviceNo },      // H - Service No
           { range: `I${nextRow}`, value: tiket.odp },            // I - Device Name (ODP)
           { range: `J${nextRow}`, value: 'OPEN' },               // J - Status
-          { range: `K${nextRow}`, value: tiket.ttrCustomer },    // K - TTR Dashboard (durasi)
+          { range: `K${nextRow}`, value: tiket.ttrCustomer || timestamp }, // K - TTR Dashboard (durasi, fallback ke timestamp jika kosong)
           // L - SKIP (rumus NOW)
           { range: `M${nextRow}`, value: timestamp },            // M - Timestamp
         ];
