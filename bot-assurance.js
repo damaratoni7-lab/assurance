@@ -798,14 +798,7 @@ bot.on('message', async (msg) => {
         let confirmMsg = `✅ <b>Data Tiket Baru berhasil disimpan!</b> (Row ${nextRow})\n\n`;
         confirmMsg += `📋 <b>Incident:</b> ${tiket.incident}\n`;
         confirmMsg += `👷 <b>Teknisi:</b> ${mappedTeknisi}\n`;
-        confirmMsg += `📍 <b>Workzone:</b> ${workzone}\n`;
-        confirmMsg += `🏢 <b>Segment:</b> TSEL\n`;
-        confirmMsg += `👤 <b>Customer Type:</b> ${tiket.customerType}\n`;
-        confirmMsg += `📞 <b>Service No:</b> ${tiket.serviceNo}\n`;
-        confirmMsg += `📡 <b>Device:</b> ${tiket.odp}\n`;
-        confirmMsg += `📊 <b>Status:</b> OPEN\n`;
-        confirmMsg += `⏱ <b>TTR:</b> ${tiket.ttrCustomer}\n`;
-        confirmMsg += `🕐 <b>Timestamp:</b> ${timestamp}`;
+        confirmMsg += `📍 <b>Workzone:</b> ${workzone}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
@@ -892,10 +885,22 @@ bot.on('message', async (msg) => {
           console.error('⚠️ Auto-close error:', closeErr.message);
         }
 
-        let confirmMsg = `✅ Data berhasil disimpan!\n\n`;
+        let confirmMsg = `✅ Data Assurance berhasil disimpan!\n\n`;
         confirmMsg += `<b>Incident:</b> ${parsed.incidentNo}\n`;
         confirmMsg += `<b>Close:</b> ${parsed.closeDesc}\n`;
         if (orderClosed) confirmMsg += `<b>Status ORDER:</b> ✅ Auto-CLOSE | <b>KAWAL TTR:</b> ${kawalTTR}\n`;
+        confirmMsg += `<b>Material:</b>\n`;
+        confirmMsg += `  • Dropcore: ${parsed.dropcore || '-'}\n`;
+        confirmMsg += `  • Patchcord: ${parsed.patchcord || '-'}\n`;
+        confirmMsg += `  • SOC: ${parsed.soc || '-'}\n`;
+        confirmMsg += `  • PSLAVE: ${parsed.pslave || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/8: ${parsed.passive1_8 || '-'}\n`;
+        confirmMsg += `  • PASSIVE 1/4: ${parsed.passive1_4 || '-'}\n`;
+        confirmMsg += `  • Pigtail: ${parsed.pigtail || '-'}\n`;
+        confirmMsg += `  • Adaptor: ${parsed.adaptor || '-'}\n`;
+        confirmMsg += `  • Roset: ${parsed.roset || '-'}\n`;
+        confirmMsg += `  • RJ 45: ${parsed.rj45 || '-'}\n`;
+        confirmMsg += `  • LAN: ${parsed.lan || '-'}`;
 
         return sendTelegram(chatId, confirmMsg, { reply_to_message_id: msgId });
       } catch (err) {
